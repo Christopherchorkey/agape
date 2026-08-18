@@ -1,4 +1,4 @@
-import AgapeLean.Core
+import AGAPE.Core
 import Mathlib
 
 /-! ### Energy.lean — Section 6: energy decline (symmetric-topology case)
@@ -26,7 +26,7 @@ lemma dissipation_nonneg (cfg : SystemConfig ι) (W : NetworkTopology ι)
     unfold smoothAttenuation
     positivity
   have h_sens : (cfg i).distortionSens ≥ 0 := (hpos i).sens_pos
-  
+
   have h_dist : localDistortion W traj t i τ ≥ 0 := by
     unfold localDistortion
     apply Finset.sum_nonneg

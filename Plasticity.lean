@@ -1,4 +1,4 @@
-import AgapeLean.Energy
+import AGAPE.Energy
 import Mathlib
 import Mathlib.Tactic.MinImports
 

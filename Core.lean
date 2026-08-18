@@ -239,4 +239,216 @@ noncomputable def totalAgapeEnergy (cfg : SystemConfig ι) (W : NetworkTopology 
   kinetic + potential
 
 -- =========================================================================
+/-!
+ADDITION TO Core.lean: repulsion_strength stability threshold.
+
+STATUS: highest-risk Lean of this session -- arcsin API + neighborhood
+transfer (HasDerivAt.congr_of_eventuallyEq), not the well-worn
+.sum/.const_mul/.comp/.pow combinators used elsewhere. Confident in the
+MATH, less confident in exact Mathlib names/signatures here. Two build
+rounds in already; treat this as still-in-progress, not finished.
+
+MATH SUMMARY: phaseDistance(Δ,0) = 2·arcsin|sin(Δ/2)| has a corner at
+Δ=0 (built from |·|), but SQUARING it removes the corner:
+  phaseDistance(Δ,0)² = Δ²   exactly, for Δ ∈ [-π,π]
+via arcsin(|x|) = |arcsin(x)| (arcsin odd + monotonic). That's what makes
+repulsionGate differentiable at 0 despite the |·| in its definition.
+
+Then couplingForceField(Δ,rs) = f(Δ)·sin(Δ), f = resonanceField - rs·repulsionGate.
+Product rule at Δ=0: f'(0)·sin(0) + f(0)·cos(0) = f(0) (f'(0) term vanishes
+regardless of its value, since sin(0)=0 -- so neither resonanceField's nor
+repulsionGate's derivative *value* at 0 is actually needed, only that both
+exist). So couplingForceField'(0) = resonanceField(0) - rs·repulsionGate(0)
+  = 1/(1+exp(-8)) - rs·(1/2),
+negative (exact fusion unstable) exactly when rs > 2/(1+exp(-8)) ≈ 1.9993 --
+slightly less than 2; the existing doc's "repulsionStrength > 2" is a good
+approximation, not the exact value.
+-/
+
+-- Step 1: the corner-removing identity.
+lemma phaseDistance_sq_eq (Δ : ℝ) (hΔ : Δ ∈ Set.Icc (-Real.pi) Real.pi) :
+    phaseDistance Δ 0 ^ 2 = Δ ^ 2 := by
+  unfold phaseDistance
+  have hx1 : -(Real.pi / 2) ≤ Δ / 2 := by linarith [hΔ.1]
+  have hx2 : Δ / 2 ≤ Real.pi / 2 := by linarith [hΔ.2]
+  have harcsin : Real.arcsin (Real.sin (Δ / 2)) = Δ / 2 := Real.arcsin_sin hx1 hx2
+  have hsin_nonneg : 0 ≤ Δ / 2 → 0 ≤ Real.sin (Δ / 2) := fun h =>
+    Real.sin_nonneg_of_nonneg_of_le_pi h (by linarith [hΔ.2])
+  have hsin_neg : Δ / 2 < 0 → Real.sin (Δ / 2) < 0 := by
+    intro h
+    have hpos : 0 < -(Δ / 2) := by linarith
+    have hlt : -(Δ / 2) < Real.pi := by linarith [hΔ.1, Real.pi_pos]
+    have hpp := Real.sin_pos_of_pos_of_lt_pi hpos hlt
+    rw [Real.sin_neg] at hpp
+    linarith
+  have habs : Real.arcsin |Real.sin (Δ / 2)| = |Δ / 2| := by
+    by_cases h : (0:ℝ) ≤ Δ / 2
+    · rw [abs_of_nonneg (hsin_nonneg h), harcsin, abs_of_nonneg h]
+    · have h' : Δ / 2 < 0 := not_le.mp h
+      rw [abs_of_neg (hsin_neg h'), Real.arcsin_neg, harcsin, abs_of_neg h']
+  have hsub : (Δ - 0) / 2 = Δ / 2 := by ring
+  rw [hsub, habs, mul_pow, sq_abs]
+  ring
+
+-- Step 2: repulsionGate matches a clean, corner-free closed form near 0.
+lemma repulsionGate_eq_on_Icc (Δ steepness : ℝ) (hΔ : Δ ∈ Set.Icc (-Real.pi) Real.pi) :
+    repulsionGate Δ steepness = smoothAttenuation (steepness * Δ ^ 2) := by
+  unfold repulsionGate
+  rw [phaseDistance_sq_eq Δ hΔ]
+
+-- Step 3: smoothAttenuation is differentiable everywhere (division form,
+-- matching the actual definition -- NOT (1+exp x)⁻¹).
+lemma smoothAttenuation_hasDerivAt (x : ℝ) :
+    HasDerivAt smoothAttenuation (-Real.exp x / (1 + Real.exp x) ^ 2) x := by
+  unfold smoothAttenuation
+  have h1 : HasDerivAt (fun y => 1 + Real.exp y) (Real.exp x) x :=
+    (Real.hasDerivAt_exp x).const_add 1
+  have h2 := h1.inv (by positivity)
+  have hfe : (fun y => 1 + Real.exp y)⁻¹ = fun distortion => 1 / (1 + Real.exp distortion) := by
+    funext y
+    show (1 + Real.exp y)⁻¹ = 1 / (1 + Real.exp y)
+    rw [one_div]
+  rw [hfe] at h2
+  exact h2
+
+-- Step 4: repulsionGate's derivative at 0 is exactly 0 (the outer
+-- derivative's value doesn't matter -- it's multiplied by d/dΔ[Δ²]=2Δ=0).
+lemma repulsionGate_hasDerivAt_zero (steepness : ℝ) :
+    HasDerivAt (fun Δ => repulsionGate Δ steepness) 0 0 := by
+  have hsq : HasDerivAt (fun Δ : ℝ => steepness * Δ ^ 2) 0 0 := by
+    have h := (hasDerivAt_pow 2 (0 : ℝ)).const_mul steepness
+    simpa using h
+  have houter := smoothAttenuation_hasDerivAt (steepness * (0 : ℝ) ^ 2)
+  have hcomp := houter.comp 0 hsq
+  have heq0 : (-Real.exp (steepness * (0 : ℝ) ^ 2) / (1 + Real.exp (steepness * (0 : ℝ) ^ 2)) ^ 2) * 0 = 0 := by
+    ring
+  rw [heq0] at hcomp
+  have hfe : (smoothAttenuation ∘ fun Δ : ℝ => steepness * Δ ^ 2)
+      = fun Δ => smoothAttenuation (steepness * Δ ^ 2) := by
+    funext Δ
+    rfl
+  rw [hfe] at hcomp
+  have hnb : Set.Icc (-Real.pi) Real.pi ∈ nhds (0 : ℝ) :=
+    Icc_mem_nhds (by linarith [Real.pi_pos]) (by linarith [Real.pi_pos])
+  apply hcomp.congr_of_eventuallyEq
+  filter_upwards [hnb] with Δ hΔ
+  exact repulsionGate_eq_on_Icc Δ steepness hΔ
+
+-- Step 5: resonanceField's existence (not closed form -- it's multiplied
+-- by sin(0)=0 downstream, so the value never matters). fun_prop was tried
+-- here twice and failed both times (couldn't auto-discharge the nonzero
+-- denominator side-condition), so this is a fully manual HasDerivAt chain
+-- instead, using a metavariable for the derivative value since only the
+-- function *shape* needs to match, not the exact value.
+--
+-- BUILD FIX (confirmed against actual `lake build` error): the original
+-- version of this proof built hE/hF via `.div`/`.mul` with no type
+-- ascription, then tried to bridge the result to a pointwise `fun x => _`
+-- shape with a `funext x; rfl`-proved rewrite (`hfe`), deferring the
+-- existential witness via `refine ⟨_, ?_⟩`. `.div`/`.mul` in this Mathlib
+-- version produce their HasDerivAt conclusion using Pi-level `/`/`*`
+-- notation rather than a pointwise lambda -- defeq-equal (that's exactly
+-- how the Pi instances unfold) but not syntactically matched by `rw`, and
+-- with the witness left as a deferred metavariable via `refine ⟨_, ?_⟩`,
+-- Lean gave up on solving it ("don't know how to synthesize placeholder
+-- for argument `w`" -- `w` being Exists.intro's witness parameter name)
+-- before the later `exact hF` could pin it down.
+--
+-- Fix: ascribe the intended pointwise-lambda type directly on hE and hF,
+-- forcing Lean to check the assignment via defeq instead of leaving the
+-- shape to whatever `.div`/`.mul` happen to emit -- this removes the need
+-- for `hfe`/`rw` entirely. Then close with a single `exact ⟨_, hF⟩` at the
+-- very end (no gap between introducing the witness and fixing it).
+lemma resonanceField_hasDerivAt_zero : ∃ D : ℝ, HasDerivAt resonanceField D 0 := by
+  have hne : (1:ℝ) + Real.exp (-8 * Real.cos (0:ℝ)) ≠ 0 := by positivity
+  have hcos : HasDerivAt Real.cos (-Real.sin 0) 0 := Real.hasDerivAt_cos 0
+  have hA : HasDerivAt (fun x => (1 + Real.cos x) / 2) ((-Real.sin 0) / 2) 0 :=
+    (hcos.const_add 1).div_const 2
+  have hB : HasDerivAt (fun x => -8 * Real.cos x) (-8 * -Real.sin 0) 0 := hcos.const_mul (-8)
+  have hC : HasDerivAt (fun x => Real.exp (-8 * Real.cos x))
+      (Real.exp (-8 * Real.cos 0) * (-8 * -Real.sin 0)) 0 := hB.exp
+  have hD : HasDerivAt (fun x => 1 + Real.exp (-8 * Real.cos x))
+      (Real.exp (-8 * Real.cos 0) * (-8 * -Real.sin 0)) 0 := hC.const_add 1
+  have hE : HasDerivAt (fun x => 1 / (1 + Real.exp (-8 * Real.cos x)))
+      ((0 * (1 + Real.exp (-8 * Real.cos 0))
+          - 1 * (Real.exp (-8 * Real.cos 0) * (-8 * -Real.sin 0)))
+        / (1 + Real.exp (-8 * Real.cos 0)) ^ 2) 0 :=
+    (hasDerivAt_const (0:ℝ) (1:ℝ)).div hD hne
+  have hF : HasDerivAt
+      (fun x => (1 + Real.cos x) / 2 * (1 / (1 + Real.exp (-8 * Real.cos x))))
+      ((-Real.sin 0 / 2) * (1 / (1 + Real.exp (-8 * Real.cos 0)))
+        + (1 + Real.cos 0) / 2
+          * ((0 * (1 + Real.exp (-8 * Real.cos 0))
+                - 1 * (Real.exp (-8 * Real.cos 0) * (-8 * -Real.sin 0)))
+              / (1 + Real.exp (-8 * Real.cos 0)) ^ 2)) 0 :=
+    hA.mul hE
+  have hgoal : resonanceField
+      = fun phase_diff => (1 + Real.cos phase_diff) / 2
+          * (1 / (1 + Real.exp (-8 * Real.cos phase_diff))) := by
+    funext x
+    simp only [resonanceField]
+  rw [hgoal]
+  exact ⟨_, hF⟩
+
+-- Step 6: couplingForceField's derivative at Δ=0, in closed form.
+-- NOTE: couplingForceField itself has no independent steepness parameter
+-- -- it calls repulsionGate Δ using THAT function's own default (20).
+-- So this theorem is only over repulsionStrength, with repulsionGate 0
+-- implicitly at steepness=20, matching couplingForceField's actual body.
+theorem couplingForceField_hasDerivAt_zero (repulsionStrength : ℝ) :
+    HasDerivAt (fun Δ => couplingForceField Δ repulsionStrength)
+      (resonanceField 0 - repulsionStrength * repulsionGate 0) 0 := by
+  unfold couplingForceField
+  obtain ⟨D, hD⟩ := resonanceField_hasDerivAt_zero
+  have hgate := repulsionGate_hasDerivAt_zero (20 : ℝ)
+  have hf : HasDerivAt (fun Δ => resonanceField Δ - repulsionStrength * repulsionGate Δ 20)
+      (D - repulsionStrength * 0) 0 := hD.sub (hgate.const_mul repulsionStrength)
+  have hsin : HasDerivAt Real.sin (Real.cos 0) 0 := Real.hasDerivAt_sin 0
+  have hprod := hf.mul hsin
+  have hfe : ((fun Δ => resonanceField Δ - repulsionStrength * repulsionGate Δ 20) * Real.sin)
+      = fun Δ => (resonanceField Δ - repulsionStrength * repulsionGate Δ 20) * Real.sin Δ := by
+    funext Δ
+    rfl
+  rw [hfe] at hprod
+  have heq : (D - repulsionStrength * 0) * Real.sin 0
+      + (resonanceField 0 - repulsionStrength * repulsionGate 0 20) * Real.cos 0
+      = resonanceField 0 - repulsionStrength * repulsionGate 0 20 := by
+    simp
+  rw [heq] at hprod
+  exact hprod
+
+-- Step 7: the threshold. Exact fusion (Δ=0) is linearly unstable exactly
+-- when repulsionStrength exceeds 2/(1+exp(-8)) -- very slightly less than
+-- 2 (exp(-8) ≈ 0.000335). Stated in cross-multiplied form to avoid any
+-- division-vs-product rewriting fragility.
+theorem exact_fusion_unstable_iff (repulsionStrength : ℝ) :
+    resonanceField 0 - repulsionStrength * repulsionGate 0 < 0
+      ↔ 2 < repulsionStrength * (1 + Real.exp (-8)) := by
+  have hexp : (0:ℝ) < 1 + Real.exp (-8) := by positivity
+  have h_res : resonanceField 0 = 1 / (1 + Real.exp (-8)) := by
+    unfold resonanceField
+    simp only [Real.cos_zero]
+    norm_num
+  have hpd : phaseDistance 0 0 = 0 := by
+    unfold phaseDistance
+    norm_num [Real.sin_zero, Real.arcsin_zero]
+  have h_rep : repulsionGate 0 = 1 / 2 := by
+    unfold repulsionGate
+    rw [hpd]
+    unfold smoothAttenuation
+    norm_num [Real.exp_zero]
+  have hstep : (1 / (1 + Real.exp (-8)) - repulsionStrength * (1 / 2) < 0)
+      ↔ (1 / (1 + Real.exp (-8)) < repulsionStrength * (1 / 2)) := by
+    constructor <;> intro h <;> linarith
+  have hkey : (1:ℝ) / (1 + Real.exp (-8)) * (1 + Real.exp (-8)) = 1 := by
+    field_simp
+  rw [h_res, h_rep, hstep]
+  constructor
+  · intro h
+    nlinarith [mul_lt_mul_of_pos_right h hexp, hkey]
+  · intro h
+    by_contra hc
+    push_neg at hc
+    nlinarith [mul_le_mul_of_nonneg_right hc hexp.le, hkey]
+
 #min_imports
