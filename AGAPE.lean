@@ -1,8 +1,8 @@
-import AGAPE.Core
-import AGAPE.Energy
-import AGAPE.Logistics
-import AGAPE.Plasticity
-import AGAPE.Creativity
+import Core
+import Energy
+import Logistics
+import Plasticity
+import Creativity
 
 /-! # AGAPE Framework
 Adaptive Generative Architecture for Plasticity and Evolution
